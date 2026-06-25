@@ -1,19 +1,46 @@
-# 🎈 Blank app template
+# 🦢 블랙스완 프래질리티 시뮬레이터
 
-A simple Streamlit app template for you to modify!
+나심 탈레브의 사상에 기반한 주식 시장 시뮬레이터. **핵심은 예측이 맞느냐가 아니라,
+예측에 근거한 행동(전략)이 블랙스완 앞에서 프래질(취약)한가, 안티프래질(반취약)한가**를
+평가하는 것이다. 사용자는 그 결과로 투자 의사결정을 내린다.
 
-[![Open in Streamlit](https://static.streamlit.io/badges/streamlit_badge_black_white.svg)](https://blank-app-template.streamlit.app/)
+## 무엇을 평가하나
 
-### How to run it on your own machine
+- **볼록성 지수 (안티프래질리티):** 변동성을 ±50% 섭동시켜 손익의 2차 곡률을 측정하는
+  탈레브–두아디(Taleb–Douady) 휴리스틱. `>0` 안티프래질 · `<0` 프래질 · `≈0` 로버스트.
+- **파산 확률 (생존 게이트):** 자본의 절반 이상을 잃을 확률. 탈레브의 흡수장벽/비에르고딕성
+  원칙 — 기대수익이 높아도 파산확률이 0이 아니면 그 행동은 피한다. 의사결정의 1순위.
+- **꼬리 비대칭 / 최악 경로 손실 / 손익 분포(팻테일).**
 
-1. Install the requirements
+## 작동 방식
 
-   ```
-   $ pip install -r requirements.txt
-   ```
+- **합성 시뮬레이션**: GBM에 멱법칙 점프 + 변동성 클러스터링 + 사용자가 직접 주입하는
+  블랙스완 충격을 얹은 점프확산(Bates) 모델. 실데이터 불필요.
+- 몬테카를로는 **브라우저 Web Worker**에서 실행 — 서버·비용 없음, 아이폰에서도 매끄럽게.
+- 프리셋 전략: 바이앤홀드 · 바벨(90% 현금+10% OTM 콜) · 테일 헤지 · 숏 볼 · 네이키드 풋
+  매도 · 커버드 콜 · 전액 현금.
 
-2. Run the app
+## 스택 / 배포
 
-   ```
-   $ streamlit run streamlit_app.py
-   ```
+- Next.js 14 (App Router) + TypeScript + React + recharts.
+- Vercel 배포(제로컨피그). 시뮬 엔진 정합성은 vitest로 검증.
+
+## 개발
+
+```bash
+npm install
+npm run dev      # http://localhost:3000
+npm test         # 프래질리티 엔진 정합성 테스트 (바벨→안티프래질, 숏볼→프래질, 현금→로버스트)
+npm run build
+```
+
+## 코드 구조
+
+- `lib/sim/` — 시뮬레이션 엔진 (순수 TS, UI 비의존)
+  - `paths.ts` 점프확산 경로 + 블랙스완 주입 · `payoff.ts` 전략/레그 손익 ·
+    `fragility.ts` 탈레브–두아디 휴리스틱 + 지표 · `blackScholes.ts` 옵션 가격책정 ·
+    `engine.ts` 진입점 · `worker.ts` Web Worker.
+- `components/` — 대시보드 UI · `app/` — Next.js 페이지.
+- `reference/` — 원본 Streamlit 프로토타입(`app.py`). 수식 포팅의 참고 자료.
+
+> ⚠️ 교육용 시뮬레이터입니다. 합성 데이터 기반이며 투자 자문이 아닙니다.
