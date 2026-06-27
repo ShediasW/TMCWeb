@@ -1,17 +1,21 @@
-// Quote + history proxy. Returns the current price and a clean daily close
-// series for a symbol from the Yahoo Finance chart endpoint (no API key).
-// The close series is what lib/calibrate.ts turns into drift, volatility and a
-// power-law tail exponent. Proxied server-side for the same UA/CORS reasons as
-// the search route.
+// Quote + history proxy backed by Twelve Data. Returns the latest price and a
+// clean daily close series (oldest -> newest) that lib/calibrate.ts turns into
+// drift, volatility and a power-law tail exponent.
+//
+// Requires TWELVE_DATA_API_KEY (free tier works). Without it we return a
+// distinct { error: "no_api_key" } so the client can fall back to manual entry
+// instead of showing a hard failure.
 
 import { NextRequest, NextResponse } from "next/server";
 
 export const revalidate = 1800; // cache history for 30 minutes
 
-const UA =
-  "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1";
-
-const ALLOWED_RANGES = new Set(["6mo", "1y", "2y", "5y", "10y", "max"]);
+const ALLOWED_RANGES: Record<string, number> = {
+  "6mo": 130,
+  "1y": 260,
+  "2y": 520,
+  "5y": 1300,
+};
 
 export interface QuoteResponse {
   symbol: string;
@@ -23,63 +27,57 @@ export interface QuoteResponse {
 
 export async function GET(req: NextRequest) {
   const symbol = req.nextUrl.searchParams.get("symbol")?.trim();
-  let range = req.nextUrl.searchParams.get("range")?.trim() || "2y";
-  if (!ALLOWED_RANGES.has(range)) range = "2y";
+  const range = req.nextUrl.searchParams.get("range")?.trim() || "2y";
+  const outputsize = ALLOWED_RANGES[range] ?? ALLOWED_RANGES["2y"];
   if (!symbol) {
     return NextResponse.json({ error: "symbol required" }, { status: 400 });
   }
 
-  const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(
-    symbol,
-  )}?range=${range}&interval=1d`;
+  const key = process.env.TWELVE_DATA_API_KEY;
+  if (!key) {
+    // Surface a soft, recognizable signal so the UI offers manual entry.
+    return NextResponse.json({ error: "no_api_key" }, { status: 200 });
+  }
+
+  const url =
+    `https://api.twelvedata.com/time_series?symbol=${encodeURIComponent(symbol)}` +
+    `&interval=1day&outputsize=${outputsize}&apikey=${key}`;
 
   try {
     const r = await fetch(url, {
-      headers: { "User-Agent": UA, Accept: "application/json" },
+      headers: { Accept: "application/json" },
       next: { revalidate },
     });
     if (!r.ok) {
       return NextResponse.json({ error: `upstream ${r.status}` }, { status: 502 });
     }
-    const data = await r.json();
-    const result = data?.chart?.result?.[0];
-    if (!result) {
-      return NextResponse.json({ error: "no data for symbol" }, { status: 404 });
-    }
-    const meta = result.meta ?? {};
-    const ts: number[] = result.timestamp ?? [];
-    // Prefer adjusted close (handles splits/dividends), fall back to raw close.
-    const adj: (number | null)[] | undefined =
-      result.indicators?.adjclose?.[0]?.adjclose;
-    const raw: (number | null)[] | undefined =
-      result.indicators?.quote?.[0]?.close;
-    const series = adj ?? raw ?? [];
-
-    const closes: number[] = [];
-    const timestamps: number[] = [];
-    for (let i = 0; i < series.length; i++) {
-      const c = series[i];
-      if (typeof c === "number" && Number.isFinite(c) && c > 0) {
-        closes.push(c);
-        timestamps.push(ts[i]);
-      }
-    }
-    if (closes.length < 30) {
+    const json = await r.json();
+    if (json?.status === "error") {
+      const isLimit = json.code === 429;
       return NextResponse.json(
-        { error: "insufficient history" },
-        { status: 404 },
+        { error: isLimit ? "rate_limited" : json.message || "provider error" },
+        { status: isLimit ? 429 : 502 },
       );
     }
-
-    const price =
-      typeof meta.regularMarketPrice === "number"
-        ? meta.regularMarketPrice
-        : closes[closes.length - 1];
-
+    const meta = json?.meta ?? {};
+    const values: { datetime: string; close: string }[] = json?.values ?? [];
+    if (values.length < 30) {
+      return NextResponse.json({ error: "insufficient history" }, { status: 404 });
+    }
+    // Twelve Data returns newest-first; reverse to oldest-first for calibration.
+    const closes: number[] = [];
+    const timestamps: number[] = [];
+    for (let i = values.length - 1; i >= 0; i--) {
+      const c = parseFloat(values[i].close);
+      if (Number.isFinite(c) && c > 0) {
+        closes.push(c);
+        timestamps.push(Math.floor(new Date(values[i].datetime).getTime() / 1000));
+      }
+    }
     const payload: QuoteResponse = {
       symbol: meta.symbol || symbol.toUpperCase(),
       currency: meta.currency || "USD",
-      price,
+      price: closes[closes.length - 1],
       closes,
       timestamps,
     };
