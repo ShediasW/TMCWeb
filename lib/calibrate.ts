@@ -69,6 +69,30 @@ export function alphaToJumpIntensity(alpha: number): number {
   return Math.min(3, Math.max(0.2, Math.round(v * 10) / 10));
 }
 
+// Build a calibration directly from user-supplied numbers, for the manual
+// fallback path (no historical series available — e.g. no API key, or the
+// data provider is unreachable). Tail exponent defaults to the equity cubic law.
+export function manualCalibration(opts: {
+  price: number;
+  annualVol: number;
+  annualDrift?: number;
+  tailAlpha?: number;
+}): Calibration {
+  const tailAlpha = clampAlpha(opts.tailAlpha ?? 3);
+  return {
+    s0: opts.price,
+    annualDrift: opts.annualDrift ?? 0.08,
+    annualVol: opts.annualVol,
+    tailAlpha,
+    nReturns: 0,
+    jumpIntensity: alphaToJumpIntensity(tailAlpha),
+  };
+}
+
+function clampAlpha(a: number): number {
+  return Math.min(6, Math.max(1.5, a));
+}
+
 export function calibrate(closes: number[]): Calibration {
   const clean = closes.filter((c) => Number.isFinite(c) && c > 0);
   const s0 = clean.length ? clean[clean.length - 1] : 0;

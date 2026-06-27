@@ -1,13 +1,15 @@
-// Ticker search proxy. The Yahoo Finance search endpoint needs a browser-like
-// User-Agent and blocks cross-origin browser calls, so we proxy it server-side.
-// No API key required. Results are cached briefly to stay under rate limits.
+// Ticker search proxy backed by Twelve Data (https://twelvedata.com).
+//
+// We moved off Yahoo's unofficial endpoint because it rate-limits (HTTP 429)
+// datacenter IPs like Vercel's serverless functions, which left the search box
+// empty in production. Twelve Data is reliable from servers; symbol search is
+// open, and the API key (when set) is forwarded for higher limits.
+//
+// Set TWELVE_DATA_API_KEY in the Vercel project env for full coverage.
 
 import { NextRequest, NextResponse } from "next/server";
 
 export const revalidate = 600; // cache identical queries for 10 minutes
-
-const UA =
-  "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1";
 
 export interface SearchHit {
   symbol: string;
@@ -20,13 +22,14 @@ export async function GET(req: NextRequest) {
   const q = req.nextUrl.searchParams.get("q")?.trim();
   if (!q) return NextResponse.json({ quotes: [] as SearchHit[] });
 
-  const url = `https://query1.finance.yahoo.com/v1/finance/search?q=${encodeURIComponent(
-    q,
-  )}&quotesCount=8&newsCount=0`;
+  const key = process.env.TWELVE_DATA_API_KEY;
+  const url =
+    `https://api.twelvedata.com/symbol_search?symbol=${encodeURIComponent(q)}` +
+    `&outputsize=12${key ? `&apikey=${key}` : ""}`;
 
   try {
     const r = await fetch(url, {
-      headers: { "User-Agent": UA, Accept: "application/json" },
+      headers: { Accept: "application/json" },
       next: { revalidate },
     });
     if (!r.ok) {
@@ -35,27 +38,37 @@ export async function GET(req: NextRequest) {
         { status: 502 },
       );
     }
-    const data = await r.json();
-    const quotes: SearchHit[] = (data.quotes ?? [])
-      .filter(
-        (x: { symbol?: string; quoteType?: string }) =>
-          x.symbol && (x.quoteType === "EQUITY" || x.quoteType === "ETF"),
-      )
+    const json = await r.json();
+    // Twelve Data signals problems with { status: "error", code, message }.
+    if (json?.status === "error") {
+      return NextResponse.json(
+        { quotes: [] as SearchHit[], error: json.message || "provider error" },
+        { status: 502 },
+      );
+    }
+    const seen = new Set<string>();
+    const quotes: SearchHit[] = (json?.data ?? [])
       .map(
         (x: {
           symbol: string;
-          longname?: string;
-          shortname?: string;
-          exchDisp?: string;
+          instrument_name?: string;
           exchange?: string;
-          quoteType: string;
+          instrument_type?: string;
         }) => ({
           symbol: x.symbol,
-          name: x.longname || x.shortname || x.symbol,
-          exchange: x.exchDisp || x.exchange || "",
-          type: x.quoteType,
+          name: x.instrument_name || x.symbol,
+          exchange: x.exchange || "",
+          type: x.instrument_type || "",
         }),
-      );
+      )
+      .filter((h: SearchHit) => {
+        // de-dupe identical symbol+exchange rows Twelve Data returns
+        const k = `${h.symbol}|${h.exchange}`;
+        if (!h.symbol || seen.has(k)) return false;
+        seen.add(k);
+        return true;
+      })
+      .slice(0, 10);
     return NextResponse.json({ quotes });
   } catch {
     return NextResponse.json(

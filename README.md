@@ -33,9 +33,13 @@
 
 - **시뮬레이션 코어**: GBM에 **멱법칙 점프(꼬리지수 α)** + 변동성 클러스터링 + 블랙스완
   충격을 얹은 점프확산(Bates) 모델. 두 모드가 같은 엔진(`paths.ts`)을 공유한다.
-- **데이터 레이어**: Yahoo Finance 비공식 API를 Next.js route handler로 프록시
-  (`/api/search`, `/api/quote`). **API 키·환경변수 불필요** — 서버리스 함수가 시세만
-  중계하고, 무거운 몬테카를로는 여전히 **브라우저 Web Worker**에서 돈다. 아이폰에서 매끄럽게.
+- **데이터 레이어**: [Twelve Data](https://twelvedata.com) API를 Next.js route handler로
+  프록시(`/api/search`, `/api/quote`). 서버리스 함수가 시세·과거데이터만 중계하고, 무거운
+  몬테카를로는 여전히 **브라우저 Web Worker**에서 돈다. 아이폰에서 매끄럽게.
+  - **환경변수**: `TWELVE_DATA_API_KEY`(무료 발급)를 Vercel 프로젝트 env에 설정.
+    데이터센터 IP를 차단하는 무키 소스(Yahoo 등)의 429 문제를 피하기 위함.
+  - 키가 없거나 제공자가 응답하지 않으면 UI가 **수동 입력 폴백**으로 전환된다
+    (티커·현재가·연 변동성 직접 입력 → 동일 시뮬 실행).
 - 프래질리티 모드 프리셋 전략: 바이앤홀드 · 바벨(90% 현금+10% OTM 콜) · 테일 헤지 · 숏 볼
   · 네이키드 풋 매도 · 커버드 콜 · 전액 현금.
 
@@ -61,7 +65,7 @@ npm run build
     `payoff.ts` 전략/레그 손익 · `fragility.ts` 탈레브–두아디 휴리스틱 ·
     `blackScholes.ts` 옵션 가격책정 · `engine.ts` 프래질리티 진입점 · `worker.ts` Web Worker.
 - `lib/calibrate.ts` — 과거 종가 → 드리프트·변동성·Hill 꼬리지수 자동 보정.
-- `app/api/` — `search`·`quote` route handler (Yahoo 시세 프록시, 키 불필요).
+- `app/api/` — `search`·`quote` route handler (Twelve Data 시세 프록시, `TWELVE_DATA_API_KEY`).
 - `components/` — `StockPicker`·`ForecastControls`·`PriceInsights`·`PriceFanChart`·
   `PriceHistogram`(가격 모드) + 프래질리티 대시보드 UI · `app/` — Next.js 페이지.
 - `reference/` — 원본 Streamlit 프로토타입(`app.py`). 수식 포팅의 참고 자료.
